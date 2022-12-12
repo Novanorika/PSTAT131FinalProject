@@ -1,0 +1,30 @@
+pH
+This Column defines PH alus of the milk which ranges from 3 to 9.5 max : 6.25 to 6.90
+
+Temprature
+This Column defines Temprature of the milk which ranges from 34'C to 90'C max : 34'C to 45.20'C
+
+Taste
+This Column defines Taste of the milk which is categorical data 0 (Bad) or 1 (Good) max : 1 (Good)
+
+Odor
+This Column defines Odor of the milk which is categorical data 0 (Bad) or 1 (Good) max : 0 (Bad)
+
+Fat
+This Column defines Fat of the milk which is categorical data 0 (Low) or 1 (High) max : 1 (High)
+
+Turbidity
+This Column defines Turbidity of the milk which is categorical data 0 (Low) or 1 (High) max : 1 (High)
+
+Colour
+This Column defines Colour of the milk which ranges from 240 to 255, the higher the lighter/more white, the lower the darker/more yellow* max : 255
+
+Grade
+This Column defines Grade (Target) of the milk which is categorical data Where Low (Bad) or Medium (Moderate) High
+
+
+
+
+*color code source: https://htmlcolorcodes.com/color-chart/
+
+data source: https://www.kaggle.com/datasets/cpluzshrijayan/milkquality

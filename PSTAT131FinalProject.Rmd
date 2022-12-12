@@ -1,0 +1,389 @@
+---
+title: "Final Project - Milk Quality"
+author: "Eleanor Li"
+date: "2022-11-23"
+output:
+  html_document:
+      toc: true
+      toc_float: true
+      code_folding: show
+  pdf_document: default
+---
+
+## Introduction
+Milk as a common dairy product consumed and loved by a lot of people, can provide us plenty of nitration. However it can also cause concerns and bring illness to human body when the quality of the milk goes bad. The aim of this project is to build a machine learning model to predict the quality of milk using classification. The dataset contains 7 variables that will affect milk quality: pH, Temperature, Taste, Odor, Fat, Turbidity, and Color. We will first analyze the variables, use the dataset to train our model, find the best model and finally use the testing set to test whether it could give us good predictions.
+data source: https://www.kaggle.com/datasets/cpluzshrijayan/milkquality
+
+```{r}
+knitr::include_graphics("C:/Users/Eleanor/Downloads/milk_5.jpg")
+```
+
+## Loading Environment
+```{r}
+library(tidymodels)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(janitor)
+library(corrplot)
+library(corrr)
+library(mod)
+library(randomForest)
+library(vip)
+library(ranger)
+library(xgboost)
+library(klaR)
+library(MASS)
+tidymodels_prefer()
+```
+
+## Exploratory Data Analysis
+
+### Loading and Processing Data
+```{r}
+milk<-read.csv('C:/Users/Eleanor/Desktop/data/unprocessed/milknew.csv')
+
+milk<-milk %>% 
+  clean_names()
+
+names(milk)
+
+missing<-!complete.cases(milk)
+milk[missing,]    # check if there is missing data
+
+milk<-milk %>% 
+  mutate(taste=as.factor(taste),
+         odor=as.factor(odor),
+         grade=as.factor(grade),
+         fat=as.factor(fat),
+         turbidity=as.factor(turbidity))    # changing nominal predictors to factors
+
+dim(milk)
+
+set.seed(800)
+```
+There is no missing data. Proceed to data visualizing and splitting.
+
+### Visualizing Data 
+```{r}
+milk %>% 
+  ggplot(aes(colour))+
+  geom_histogram(binwidth = 0.2, colour = 'white')+
+  labs(title = 'Histogram of Milk Colour')
+```
+From the histogram we can see that most milk samples are white color. A few milk samples are light yellow and smoke white.
+
+```{r}
+milk %>% 
+  ggplot(aes(taste)) +
+  geom_bar(aes(fill = grade))
+```
+
+```{r}
+milk %>% 
+  ggplot(aes(odor)) +
+  geom_bar(aes(fill = grade))
+```
+Higher grade milk tends to have good odor but it is interesting that amount of low grade milk have good taste.
+
+```{r}
+milk %>% 
+  ggplot(aes(p_h))+
+  geom_histogram(binwidth=0.15,color = 'white',
+                 fill='blue')
+```
+From the plot we can see that most milk samples have neutral pH. There are a few samples very acid or very base.
+
+```{r}
+milk %>% 
+  ggplot(aes(x=p_h,y=grade))+
+  geom_boxplot()+
+  geom_jitter(alpha=0.1)+
+  labs(title = "Boxplot of Milk pH")
+```
+Milk that has higher grade usually have pH around 6.4; low grade milk has various pH.
+
+```{r}
+milk %>%
+  ggplot(aes(x = p_h, y = temprature)) + 
+    geom_point() +
+    geom_smooth(method='loess',formula=y~x)
+```
+High temperature tends to have higher pH, so in general if we want higher pH we can heat up the milk. 
+
+#### Correlation Plot
+```{r}
+milk %>% 
+  select(where(is.numeric)) %>% 
+  cor(use = 'complete.obs') %>% 
+  corrplot(type = 'lower', diag = FALSE)
+```
+From the plot we can see that in general, temperature and pH is positively related so in general if we want higher pH milk we can heat up the milk. It is interesting that pH and color is negatively related(higher pH milk has more dim color) but the temperature does not affect much on color.
+
+## Model Setting Up
+
+### Splitting Data 
+```{r}
+milk_split<-initial_split(milk, prop=0.8, strata = 'grade')
+milk_train<-training(milk_split)    # training data
+milk_test<-testing(milk_split)    # testing data
+
+dim(milk_train)
+dim(milk_test)
+```
+
+### K-Fold Cross Validation for resampling
+```{r}
+milk_folds<-vfold_cv(milk_train,v=5,strata = 'grade') 
+```
+
+### Building Recipe
+```{r}
+milk_recipe<-
+  recipe(grade~.,data = milk_train) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors()) %>% 
+  step_normalize()
+```
+
+## Model Building
+
+### Logistic Regression
+```{r}
+log_reg <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+log_wkflow <- workflow() %>% 
+  add_model(log_reg) %>% 
+  add_recipe(milk_recipe)
+
+log_fit<-fit(log_wkflow,milk_train)
+
+augment(log_fit, new_data = milk_train) %>%
+  conf_mat(truth = grade, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+The accuracy is 0.498. Not performing very well. From the heat map we can tell it gives the best prediction of low grade milk.
+
+### Classification Tree
+```{r}
+library(rpart.plot)
+ct_model <- decision_tree() %>%
+  set_engine("rpart") %>% 
+  set_mode("classification")
+
+ct_fit <- ct_model %>%
+  fit(grade ~ ., data = milk_train)
+
+ct_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot(roundint=FALSE)
+
+augment(ct_fit, new_data = milk_train) %>%
+  accuracy(truth = grade, estimate = .pred_class)
+
+ct_wkflow <- workflow() %>%
+  add_model(ct_model %>% set_args(cost_complexity = tune())) %>%
+  add_formula(grade ~ .)
+
+param_grid <- grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
+
+ct_tune <- tune_grid(
+  ct_wkflow, 
+  resamples = milk_folds, 
+  grid = param_grid, 
+  metrics = metric_set(accuracy))
+
+autoplot(ct_tune)
+
+# Best Classification Tree
+
+best_complexity <- select_best(ct_tune)
+
+class_tree_final <- finalize_workflow(ct_wkflow, best_complexity)
+
+class_tree_final_fit <- fit(class_tree_final, data = milk_train)
+
+class_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot(roundint=FALSE)
+```
+From the cost complexity parameter estimate the accuracy is approximately 0.98, which is very good result.
+
+### Random Forest Model
+```{r} 
+rf_model <- rand_forest(mtry=tune(),
+                        trees=tune(),
+                        min_n=tune()) %>%
+  set_engine("ranger", importance = 'impurity') %>%
+  set_mode("classification")
+
+rf_wkflow <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(milk_recipe)
+
+rf_grid <- grid_regular(mtry(range= c(1,5)),
+                        trees(range = c(5,150)),
+                        min_n(range = c(1,20)),
+                        levels = 5)
+
+rf_tune <- tune_grid(rf_wkflow,
+                     resamples = milk_folds,
+                     grid = rf_grid,
+                     metrics=metric_set(roc_auc))
+
+autoplot(rf_tune)
+
+collect_metrics(rf_tune) %>%
+  arrange(-mean)
+
+best_rf <- select_best(rf_tune,metric='roc_auc')
+
+rf_final <- finalize_workflow(rf_wkflow,best_rf)
+
+rf_final_fit <- fit(rf_final,milk_train)
+
+# Save Results and Workflow
+save(rf_tune, rf_wkflow, 
+     file = "C:/Users/Eleanor/Downloads/rf_tune.rda")
+```
+
+Number of trees when reach certain number(in this case, 41 trees) does not influence the result that much. The different nominal node sizes perform some differences, as they tend to have larger area under the curve as the size increases, but not very significant difference. It looks like 41 trees and 15 minimal node size is generally sufficient for our random forest model to be efficient.
+
+### Nearest Neighbors
+```{r}
+knn_model <- 
+  nearest_neighbor(neighbors = tune(),
+    mode = "classification") %>% 
+  set_engine("kknn")
+
+milk_folds_knn<-vfold_cv(milk_train,v=3,strata = 'grade')
+
+knn_wkflow <- workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(milk_recipe)
+
+knn_params <- hardhat::extract_parameter_set_dials(knn_model)
+
+knn_grid <- grid_regular(knn_params, levels = 2)
+
+knn_tune <- knn_wkflow %>% 
+  tune_grid(resamples = milk_folds_knn, 
+            grid = knn_grid)
+
+knn_tune <- tune_grid(knn_wkflow,
+                     resamples = milk_folds, 
+                     grid = knn_grid,
+                     metrics = metric_set(roc_auc))
+
+autoplot(knn_tune)
+
+# Best KNN
+best_knn <- select_best(knn_tune,metric='roc_auc')
+
+knn_final <- finalize_workflow(knn_wkflow,best_rf)
+
+knn_final_fit <- fit(knn_final,milk_train)
+
+# Save Results and Workflow
+save(knn_tune, knn_wkflow, 
+     file = "C:/Users/Eleanor/Downloads/knn_tune.rda")
+```
+It seems that the AUC is around 0.98, which gives very good performance.
+
+### Support Vector Machines
+```{r}
+library(kernlab)
+svm_model <- svm_poly(degree = 1) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab", scaled = FALSE)
+
+svm_fit <- svm_model %>% 
+  set_args(cost = 10) %>%
+  fit(grade ~ ., data = milk_train)
+
+svm_fit
+
+svm_wkflow <- workflow() %>%
+  add_model(svm_model %>% set_args(cost = tune())) %>%
+  add_formula(grade ~ .)
+
+param_grid <- grid_regular(cost(), levels = 10)
+
+svm_tune <- tune_grid(
+  svm_wkflow, 
+  resamples = milk_folds, 
+  grid = param_grid)
+
+autoplot(svm_tune)
+
+# Best SVM
+best_cost <- select_best(svm_tune, metric = "accuracy")
+
+svm_final <- finalize_workflow(svm_wkflow, best_cost)
+
+svm_final_fit <- svm_final %>% fit(milk_train)
+
+# Save Results and Workflow
+save(svm_tune, svm_wkflow, 
+     file = "C:/Users/Eleanor/Downloads/svm_tune.rda")
+```
+The accuracy of svm model is 0.874 and the best AUC is around 0.96. The AUC is large but the accuracy performance is not as good as the first two models.
+
+## Assessing Model Performance
+```{r}
+log_acc <- augment(log_fit, new_data = milk_train) %>%
+  accuracy(truth = grade, estimate = .pred_class) 
+
+ct_acc <- augment(class_tree_final_fit, new_data = milk_train) %>%
+  accuracy(truth = grade, estimate = .pred_class) 
+
+rf_acc <- augment(rf_final_fit, new_data = milk_train) %>%
+  accuracy(truth = grade, estimate = .pred_class) 
+
+knn_acc <- augment(knn_final_fit, new_data = milk_train) %>%
+  accuracy(truth = grade, estimate = .pred_class) 
+
+svm_acc <- augment(svm_final_fit,new_data=milk_train)%>%
+  accuracy(truth=grade,estimate=.pred_class)
+```
+
+```{r}
+acc <- c(log_acc = log_acc$.estimate,
+           ct_acc = ct_acc$.estimate,
+           rf_acc = rf_acc$.estimate,
+           knn_acc = knn_acc$.estimate,
+           svm_acc = svm_acc$.estimate)
+
+sort(acc)
+```
+
+From the result we can see that random forest has the best accuracy which is 1 but it might be overfitting. We will test the second best model as well.
+
+## Analysis of The Testing Data
+
+```{r}
+# Random Forest Precision
+augment(rf_final_fit,new_data=milk_test) %>%
+  conf_mat(truth=grade,estimate=.pred_class)
+augment(rf_final_fit,milk_test)%>%
+  precision(grade,.pred_class)
+
+# Classification Tree Precision
+augment(class_tree_final_fit,new_data=milk_test) %>%
+  conf_mat(truth=grade,estimate=.pred_class)
+augment(class_tree_final_fit,milk_test)%>%
+  precision(grade,.pred_class)
+```
+
+It seems that random forest model is overfitting. We choose classification tree as our final model. The precision is 0.97 which is pretty good performance.
+
+## Conclusion
+
+In this project we build a model and predict the quality of the milk, using seven predictors to classify the grade of the milk. We tried 5 models including logistic regression, classification tree, KNN, random forest and SVM. Our best model is classification tree(with 97% accuracy on the test set), and logistic regression performs poorly (did not exceed 50% accuracy). Classification tree might give the best accuracy since it has a sequential process of classifying the data, which means that each tree is dependent on prior trees and therefore make the result more accurate. Also it requires less effort for data preparation. The reason of overfitting of the random forest model, where I originally assume it would be the best performance, could be the dataset is relatively simple and does not require too many different tree models to fit the data. Milk quality is a complicated standard to predict and the process it goes great to bad can be continuous. Also in real life some of the predictors can be interacting with each other (though not in this dataset). If we want to improve we can probably find a more complex dataset and build more precise models. In general this project gives great prediction using the model we trained based on the training data.
+
+```{r}
+knitr::include_graphics("C:/Users/Eleanor/Downloads/milk_3.jpg")
+```
